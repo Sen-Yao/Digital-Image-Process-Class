@@ -1,125 +1,90 @@
 import os
 import cv2
 import numpy as np
+import utils
+import argparse
+import detect
 
 
-def find_bmp_files(directory):
-    bmp_files = []
-    # 遍历当前目录下的所有文件和子目录
-    for root, dirs, files in os.walk(directory):
-        for file in files:
-            # 检查文件扩展名是否为'.bmp'
-            if file.endswith('.bmp'):
-                # 构建完整的文件路径并添加到列表中
-                bmp_files.append(os.path.join(root, file))
-    return bmp_files
+def step_test(args):
+    bmp_files = utils.find_bmp_files('data')
+    roi_img = utils.extract_screen_roi(bmp_files[0], padding=args.roi_padding)
+    pts = utils.pixel_texture_suppression(roi_img, args.sigma)
+    illumination_img = utils.fit_illumination_model(pts)
+    cv2.imwrite(os.path.join('output', '5.1 fix_background_img.jpg'), illumination_img)
+    blurred_image = cv2.GaussianBlur(illumination_img, (args.gaussian_blur_kernel_size, args.gaussian_blur_kernel_size), 0)
+    screen_mask = utils.find_screen_mask(illumination_img, 50, epoch=args.epoch)
+    # sobel_img = utils.watershed_segmentation(blurred_image, screen_mask)
+    # sobel_img = utils.sobel(blurred_image, screen_mask, kenel=args.sobel_kernel_size, threshold=args.sobel_threshold)
+    # sobel_img = utils.canny_edge_detection(blurred_image, screen_mask, 2, 6)
+    sobel_img = detect.segment_image(blurred_image, screen_mask, 20, 2)
+    contour_img = utils.draw_all_contours_on_intervals(blurred_image, 16)
+    cv2.imwrite(os.path.join('output', '5.6 contour_img.jpg'), contour_img)
+    cv2.imwrite(os.path.join('output', '6 edge_image.jpg'), sobel_img)
+    sobel_img = utils.filter_small_white_regions(sobel_img, 20)
+    closed_img = utils.close(sobel_img, args.close_kernel, args.close_kernel)
+
+    cv2.imwrite(os.path.join('output', '7.1 closed_img.jpg'), closed_img)
+    opened_img = utils.open(closed_img, args.open_kernel, args.open_kernel)
+    opened_img = utils.filter_small_white_regions(opened_img, args.minimum_size_1)
+    cv2.imwrite(os.path.join('output', '7.2 opened_img.jpg'), opened_img)
+    filtered_img = utils.filter_small_white_regions(opened_img, args.minimum_size_2)
+    cv2.imwrite(os.path.join('output', '7.3 filtered.jpg'), filtered_img)
+    result_img = utils.highlight_defects(roi_img, filtered_img)
+    cv2.imwrite(os.path.join('output', '8 result_img.jpg'), result_img)
 
 
-def ROI_extract(pic_path):
-    image = cv2.imread(pic_path, cv2.IMREAD_GRAYSCALE)
-    x, y, w, h = 1850, 3750, 7150, 3300  # 这里是左上角点的坐标和宽度、高度
-    roi = image[y:y + h, x:x + w]
-    cv2.imwrite(os.path.join('output', '1. roi_img.jpg'), roi)
-    return roi
+def main(args):
+    bmp_files = utils.find_bmp_files('data')
+    counter = 0
+    for bmp_file in bmp_files:
+        counter += 1
+        roi_img = utils.extract_screen_roi(bmp_file, padding=args.roi_padding)
+        img = roi_img.copy()
+        filename = 'output/1. roi/roi_{}.jpg'.format(counter)
+        cv2.imwrite(filename, img)
+        img = utils.pixel_texture_suppression(img, args.sigma)
+        filename = 'output/2. low_pass/low_pass{}.jpg'.format(counter)
+        cv2.imwrite(filename, img)
+        img = utils.fit_illumination_model(img)
+        filename = 'output/3. corrected_image/corrected_image{}.jpg'.format(counter)
+        cv2.imwrite(filename, img)
 
+        screen_mask = utils.find_screen_mask(img)
+        img = cv2.GaussianBlur(img, (args.gaussian_blur_kernel_size, args.gaussian_blur_kernel_size), 0)
+        img = utils.sobel(img, screen_mask, kenel=args.sobel_kernel_size, threshold=args.sobel_threshold)
 
-def pixel_texture_suppression(image):
+        filename = 'output/4. edge/edge{}.jpg'.format(counter)
+        cv2.imwrite(filename, img)
+        opened_img = utils.open(img, args.open_kernel, args.open_kernel)
+        img = utils.close(opened_img, args.close_kernel, args.close_kernel)
+        filename = 'output/5. open_close/open_close{}.jpg'.format(counter)
+        cv2.imwrite(filename, img)
+        img = utils.filter_small_white_regions(img, args.minimum_size)
+        filename = 'output/6. filter/filter{}.jpg'.format(counter)
+        cv2.imwrite(filename, img)
+        filename = 'output/7. output/output{}.jpg'.format(counter)
+        img = utils.highlight_defects(roi_img, img)
+        cv2.imwrite(filename, img)
+        print(filename)
 
-    f_transform = np.fft.fft2(image)
-    f_shift = np.fft.fftshift(f_transform)  # 将零频率移到频谱中心
-    magnitude_spectrum = 20 * np.log(np.abs(f_shift) + 1e-9)  # 计算幅度谱
-    # 将频谱结果保存为图像文件
-    cv2.imwrite(os.path.join('output', '2. pixel_texture_suppression.jpg'), magnitude_spectrum)
-
-    # 设计滤波器
-    rows, cols = image.shape
-    crow, ccol = rows // 2, cols // 2
-    mask = np.ones((rows, cols), np.uint8)
-    mask[crow - 20:crow + 20, 0:ccol - 300] = 0
-    mask[crow - 20:crow + 20, ccol + 300:] = 0
-
-    mask[0:crow - 200, ccol-20:ccol+20] = 0
-    mask[crow + 200:, ccol-20:ccol+20] = 0
-
-    mask[crow - 300:crow + 300, 300:600] = 0
-    mask[crow - 300:crow + 300, 6550:6850] = 0
-    mask[100:300, ccol - 300:ccol + 300] = 0
-    mask[3000:3200, ccol - 300:ccol + 300] = 0
-    mask[100:300, 300:600] = 0
-    mask[3000:3200, 300:600] = 0
-    mask[100:300, 6550:6850] = 0
-    mask[3000:3200, 6550:6850] = 0
-
-    mask[:, 1950:2050] = 0
-    mask[:, 5100:5200] = 0
-    mask[:, 400:450] = 0
-    mask[:, 6725:6775] = 0
-    mask[:, 1100:1150] = 0
-    mask[:, 6000:6100] = 0
-
-    mask[175:225, :] = 0
-    mask[510:530, :] = 0
-    mask[900:925, :] = 0
-    mask[2350:2375, :] = 0
-    mask[2750:2770, :] = 0
-    mask[3050:3150, :] = 0
-
-    # 应用滤波器
-    f_shift_filtered = f_shift * mask
-    magnitude_spectrum = 20 * np.log(np.abs(f_shift_filtered) + 1e-9)  # 计算幅度谱
-    # 将结果转换为0到255之间的整数值
-    # 将频谱结果保存为图像文件
-    cv2.imwrite(os.path.join('output', '3. pixel_texture_suppression_filtered.jpg'), magnitude_spectrum)
-
-    # 逆向傅立叶变换
-    f_ishift = np.fft.ifftshift(f_shift_filtered)
-    img_back = np.fft.ifft2(f_ishift)
-    img_back = np.abs(img_back)
-
-    # 转换结果为0到255的整数
-    img_back_normalized = cv2.normalize(img_back, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    cv2.imwrite(os.path.join('output', '4. img_back_normalized.jpg'), img_back_normalized)
-    return img_back_normalized
-
-
-def contrast(image):
-    # 简单线性变换增强对比度
-    alpha = 10  # 控制对比度
-    beta = -500  # 控制亮度
-    contrasted_image = cv2.convertScaleAbs(image, alpha=alpha, beta=beta)
-    cv2.imwrite(os.path.join('output', '5. contrasted_image.jpg'), contrasted_image)
-    return contrasted_image
-
-def adjust_gamma(image, gamma=1):
-    # 构建映射表
-    invGamma = 1.0 / gamma
-    table = np.array([((i / 255.0) ** invGamma) * 255
-                      for i in np.arange(0, 256)]).astype("uint8")
-    cv2.imwrite(os.path.join('output', '5. contrasted_image.jpg'), cv2.LUT(image, table))
-
-    # 应用伽马校正使用查找表
-    return cv2.LUT(image, table)
-
-def threshold(image):
-    ret, thresholded_image = cv2.threshold(image, 180, 255, cv2.THRESH_BINARY)
-    cv2.imwrite(os.path.join('output', '6. threshold_image.jpg'), thresholded_image)
-    return thresholded_image
-
-def opening(image):
-    # 创建一个核，用于形态学操作，大小和形状可以根据需要调整
-    kernel = np.ones((5, 5), np.uint8)
-
-    # 应用开运算，去除小的噪点
-    opening_image = cv2.morphologyEx(image, cv2.MORPH_OPEN, kernel)
-    cv2.imwrite(os.path.join('output', '7. opening_image.jpg'), opening_image)
-
-def main():
-    bmp_files = find_bmp_files('data')
-    roi_img = ROI_extract(bmp_files[0])
-    pts = pixel_texture_suppression(roi_img)
-    contrast_img = adjust_gamma(pts)
-    threshold_img = threshold(contrast_img)
-    opening_img = opening(threshold_img)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="program")
+
+    parser.add_argument('--data_path', '-p', type=str, default='data', help='path to data')
+
+    parser.add_argument('--roi_padding', '-padding', type=int, default=15, help='path to GloVo model')
+    parser.add_argument('--sigma', '-s', type=int, default=50, help='path to GloVo model')
+    parser.add_argument('--epoch', '-e', type=int, default=25, help='path to GloVo model')
+    parser.add_argument('--gaussian_blur_kernel_size', '-gb', type=int, default=15, help='path to GloVo model')
+    parser.add_argument('--sobel_kernel_size', '-sks', type=int, default=7, help='path to GloVo model')
+    parser.add_argument('--sobel_threshold', '-skh', type=int, default=700, help='path to GloVo model')
+    parser.add_argument('--open_kernel', '-ok', type=int, default=5, help='path to GloVo model')
+    parser.add_argument('--close_kernel', '-ck', type=int, default=25, help='path to GloVo model')
+    parser.add_argument('--minimum_size_1', '-ms1', type=int, default=200, help='path to GloVo model')
+    parser.add_argument('--minimum_size_2', '-ms2', type=int, default=500, help='path to GloVo model')
+
+    args = parser.parse_args()
+    step_test(args)
+    # main(args)
