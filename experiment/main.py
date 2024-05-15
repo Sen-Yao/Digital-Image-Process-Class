@@ -10,15 +10,23 @@ def step_test(args):
     print('Loading Data')
     bmp_files = utils.find_bmp_files('data')
     print('ROI extracting')
-    roi_img = utils.extract_screen_roi(bmp_files[7], padding=args.roi_padding)
+    roi_img = utils.extract_screen_roi(bmp_files[5], padding=args.roi_padding)
     print('Fourier transforming')
     pts = utils.pixel_texture_suppression(roi_img, args.sigma)
     print('Illumination correcting')
     illumination_img = utils.correct_illumination(pts)
     blurred_image = cv2.GaussianBlur(illumination_img, (args.gaussian_blur_kernel_size, args.gaussian_blur_kernel_size), 0)
+    cv2.imwrite(os.path.join('output', '3 blurred_image.jpg'), blurred_image)
     screen_mask = utils.find_screen_mask(roi_img, 70, epoch=40)
     print('Dividing')
-    sobel_img = utils.segment_by_histogram_or_edges(blurred_image, screen_mask, edge_threshold=30, gray_tolerance=3, ksize=5, min_area=200, proximity=50)
+    edge_threshold = 38
+    sobel_img = utils.segment_by_histogram_or_edges(blurred_image, screen_mask, edge_threshold=38, gray_tolerance=2,
+                                                    ksize=5, min_area=200, proximity=200)
+    while np.all(sobel_img == 0):
+        edge_threshold -= 1
+        print('new_threshold=', edge_threshold)
+        sobel_img = utils.segment_by_histogram_or_edges(blurred_image, screen_mask, edge_threshold=edge_threshold, gray_tolerance=2,
+                                                        ksize=5, min_area=200, proximity=500)
 
     cv2.imwrite(os.path.join('output', '6 edge_image.jpg'), sobel_img)
     sobel_img = utils.filter_small_white_regions(sobel_img, 20)
@@ -39,13 +47,21 @@ def main(args):
         img = utils.pixel_texture_suppression(img, args.sigma)
         filename = 'output/2. low_pass/low_pass{}.jpg'.format(counter)
         cv2.imwrite(filename, img)
-        img = utils.fit_illumination_model(img)
+        img = utils.correct_illumination(img)
         filename = 'output/3. corrected_image/corrected_image{}.jpg'.format(counter)
         cv2.imwrite(filename, img)
-        screen_mask = utils.find_screen_mask(img, 50, epoch=40)
+        screen_mask = utils.find_screen_mask(roi_img, 70, epoch=40)
 
-        img = cv2.GaussianBlur(img, (args.gaussian_blur_kernel_size, args.gaussian_blur_kernel_size), 0)
-        sobel_img = utils.segment_by_histogram_or_edges(img, screen_mask, edge_threshold=35, gray_tolerance=2, ksize=5, min_area=100, proximity=50)
+        blurred_image = cv2.GaussianBlur(img, (args.gaussian_blur_kernel_size, args.gaussian_blur_kernel_size), 0)
+        sobel_img = utils.segment_by_histogram_or_edges(blurred_image, screen_mask, edge_threshold=38, gray_tolerance=2,
+                                                        ksize=5, min_area=200, proximity=200)
+        edge_threshold = 38
+        while np.all(sobel_img == 0) and edge_threshold > 10:
+            edge_threshold -= 1
+            print('new_threshold=', edge_threshold)
+            sobel_img = utils.segment_by_histogram_or_edges(blurred_image, screen_mask, edge_threshold=edge_threshold,
+                                                            gray_tolerance=2,
+                                                            ksize=5, min_area=200, proximity=500)
         filename = 'output/4. edge/edge{}.jpg'.format(counter)
         cv2.imwrite(filename, img)
         img = utils.highlight_defects(roi_img, sobel_img)
@@ -71,5 +87,5 @@ if __name__ == "__main__":
     parser.add_argument('--minimum_size_2', '-ms2', type=int, default=500, help='path to GloVo model')
 
     args = parser.parse_args()
-    step_test(args)
-    # main(args)
+    # step_test(args)
+    main(args)

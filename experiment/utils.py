@@ -94,7 +94,6 @@ def fit_illumination_model(channel, channel_name):
 
     # 从原图中减去拟合的背景模型
     corrected_image = channel - fitted_image + np.mean(fitted_image)
-    cv2.imwrite(os.path.join('output', '3. enhanced_image.jpg'), corrected_image)
     return np.clip(corrected_image, 0, 255).astype(np.uint8)
 
 
@@ -173,7 +172,10 @@ def illumination_correction(image):
 
 def find_screen_mask(img, threshold=50, epoch=20):
     img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(img, threshold, 255, cv2.THRESH_BINARY_INV)
+    if np.max(img) < 120:
+        _, thresh = cv2.threshold(img, threshold-30, 255, cv2.THRESH_BINARY_INV)
+    else:
+        _, thresh = cv2.threshold(img, threshold, 255, cv2.THRESH_BINARY_INV)
     thresh = cv2.bitwise_not(thresh)
     # 查找连通区域（轮廓）
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -295,6 +297,8 @@ def close(img, kernel_size_1=9, kernel_size_2=5):
 
 def filter_small_white_regions(image, min_area_threshold):
     # 二值化图像
+    if len(image.shape) > 2:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     _, binary_image = cv2.threshold(image, 127, 255, cv2.THRESH_BINARY)
     binary_image = np.uint8(binary_image)
     # 进行连通域分析
@@ -363,22 +367,28 @@ def segment_image_by_edges_and_tolerance(original_img, input_mask, ksize=3, edge
     print('color:', colored)
     sobel_x = cv2.Sobel(inpainted_img, cv2.CV_64F, 1, 0, ksize=ksize)
     sobel_y = cv2.Sobel(inpainted_img, cv2.CV_64F, 0, 1, ksize=ksize)
+
     sobel_x = cv2.convertScaleAbs(sobel_x)  # 转换为8位图像
     sobel_y = cv2.convertScaleAbs(sobel_y)  # 转换为8位图像
 
     # 合并梯度（获得更全面的边缘信息）
     sobel_img = cv2.addWeighted(sobel_x, 0.5, sobel_y, 0.5, 0)
+    cv2.imwrite(os.path.join('output', '3.0 edge_mask.jpg'), sobel_img)
     # 将 Sobel 图像转换为二值图像，标记出强烈的边缘
     sobel_img = set_channels_to_max(sobel_img)
+
     sobel_img = cv2.cvtColor(sobel_img, cv2.COLOR_BGR2GRAY)
-    _, edge_mask = cv2.threshold(sobel_img, edge_threshold, 255, cv2.THRESH_BINARY)
+    if colored:
+        _, edge_mask = cv2.threshold(sobel_img, edge_threshold + 5, 255, cv2.THRESH_BINARY)
+    else:
+        _, edge_mask = cv2.threshold(sobel_img, edge_threshold, 255, cv2.THRESH_BINARY)
     cv2.imwrite(os.path.join('output', '3.1 edge_mask.jpg'), sobel_img)
     # 应用输入掩膜确保边缘仅在感兴趣区域内被识别
 
     edge_mask = cv2.bitwise_and(edge_mask, edge_mask, mask=input_mask)
     cv2.imwrite(os.path.join('output', '3.2 edge_mask.jpg'), edge_mask)
 
-    closed_img = close(edge_mask, 3, 3)
+    closed_img = close(edge_mask, 5, 5)
     cv2.imwrite(os.path.join('output', '3.3 closed_img.jpg'), closed_img)
     closed_img = filter_small_white_regions(closed_img, min_area)
     cv2.imwrite(os.path.join('output', '3.4 filtered.jpg'), closed_img)
@@ -399,8 +409,8 @@ def segment_image_by_edges_and_tolerance(original_img, input_mask, ksize=3, edge
                             axis=0).astype(int)
         x, y = mid_point[0][0], mid_point[0][1]
 
-        draw_circle_on_image(original_img, 10, (x, y))
-
+        img_point = draw_circle_on_image(original_img, 10, (x, y))
+        cv2.imwrite(os.path.join('output', '3.5 point.jpg'), img_point)
         flags = 4 | (255 << 8) | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE
         flood_mask = np.zeros((original_img.shape[0] + 2, original_img.shape[1] + 2), dtype=np.uint8)
         if not colored:
@@ -409,22 +419,23 @@ def segment_image_by_edges_and_tolerance(original_img, input_mask, ksize=3, edge
                                                 (gray_tolerance, gray_tolerance, gray_tolerance), flags)
         else:
             num_filled, _, _, _ = cv2.floodFill(inpainted_img, flood_mask, (x, y), 255,
-                                                (3 * gray_tolerance, 3 * gray_tolerance, 3 * gray_tolerance),
-                                                (3 * gray_tolerance, 3 * gray_tolerance, 3 * gray_tolerance), flags)
+                                                (10 * gray_tolerance, 10 * gray_tolerance, 10 * gray_tolerance),
+                                                (10 * gray_tolerance, 10 * gray_tolerance, 10 * gray_tolerance), flags)
         print(
             f'FloodFill operation filled {num_filled} pixels starting from ({x}, {y}).')
-
+        flood_mask = fill_large_white_areas(flood_mask, 200000)
         flood_mask = flood_mask[1:-1, 1:-1]
         if num_filled > 0:
             mask = cv2.bitwise_or(mask, flood_mask)
     else:
         for i in range(len(valid_contours)):
-            if cv2.contourArea(valid_contours[i]) > 1000:
+            if cv2.contourArea(valid_contours[i]) > 400:
                 print('大边缘')
                 mid_point = np.mean([np.mean(valid_contours[i], axis=0), np.mean(valid_contours[i], axis=0)],
                                     axis=0).astype(int)
                 x, y = mid_point[0][0], mid_point[0][1]
-                draw_circle_on_image(original_img, 10, (x, y))
+                img_point = draw_circle_on_image(original_img, 10, (x, y))
+                cv2.imwrite(os.path.join('output', '3.5 point.jpg'), img_point)
                 # Applying gray tolerance segmentation at the midpoint
 
                 flags = 4 | (255 << 8) | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE
@@ -435,13 +446,14 @@ def segment_image_by_edges_and_tolerance(original_img, input_mask, ksize=3, edge
                                                         (gray_tolerance, gray_tolerance, gray_tolerance), flags)
                 else:
                     num_filled, _, _, _ = cv2.floodFill(inpainted_img, flood_mask, (x, y), 255,
-                                                        (3 * gray_tolerance, 3 * gray_tolerance, 3 * gray_tolerance),
-                                                        (3 * gray_tolerance, 3 * gray_tolerance, 3 * gray_tolerance),
+                                                        (5 * gray_tolerance, 5 * gray_tolerance, 5 * gray_tolerance),
+                                                        (5 * gray_tolerance, 5 * gray_tolerance, 5 * gray_tolerance),
                                                         flags)
                 print(
                     f'FloodFill operation filled {num_filled} pixels starting from ({x}, {y})')
 
                 flood_mask = flood_mask[1:-1, 1:-1]
+                flood_mask = fill_large_white_areas(flood_mask, 600000)
                 if num_filled > 0:
                     mask = cv2.bitwise_or(mask, flood_mask)
             for j in range(i + 1, len(valid_contours)):
@@ -451,7 +463,8 @@ def segment_image_by_edges_and_tolerance(original_img, input_mask, ksize=3, edge
                     mid_point = np.mean([np.mean(valid_contours[i], axis=0), np.mean(valid_contours[j], axis=0)],
                                         axis=0).astype(int)
                     x, y = mid_point[0][0], mid_point[0][1]
-                    draw_circle_on_image(original_img, 10, (x, y))
+                    img_point = draw_circle_on_image(original_img, 10, (x, y))
+                    cv2.imwrite(os.path.join('output', '3.5 point.jpg'), img_point)
                     # Applying gray tolerance segmentation at the midpoint
 
                     flags = 4 | (255 << 8) | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE
@@ -468,8 +481,10 @@ def segment_image_by_edges_and_tolerance(original_img, input_mask, ksize=3, edge
                         f'FloodFill operation filled {num_filled} pixels starting from ({x}, {y})')
 
                     flood_mask = flood_mask[1:-1, 1:-1]
+                    flood_mask = fill_large_white_areas(flood_mask, 200000)
                     if num_filled > 0:
                         mask = cv2.bitwise_or(mask, flood_mask)
+
     cv2.imwrite(os.path.join('output', '3.9 mask.jpg'), mask)
     mask = fill_large_white_areas(mask, 200000)
     return mask
@@ -477,7 +492,7 @@ def segment_image_by_edges_and_tolerance(original_img, input_mask, ksize=3, edge
 
 def segment_by_histogram_or_edges(original_img, input_mask, ksize=3, edge_threshold=10, gray_tolerance=5, min_area=100,
                                   proximity=50):
-    """# 提取掩膜区域内的灰度值
+    # 提取掩膜区域内的灰度值
     masked_img = cv2.bitwise_and(original_img, original_img, mask=input_mask)
     gray_values = masked_img[input_mask > 0]
 
@@ -492,24 +507,44 @@ def segment_by_histogram_or_edges(original_img, input_mask, ksize=3, edge_thresh
     plt.title('Grayscale Histogram')
     plt.xlabel('Gray Level')
     plt.ylabel('Frequency')
-    plt.savefig(os.path.join('output', '3.1 histogram.png'))"""
-    # print('divide by edge')
-    # 否则调用 segment_image_by_edges_and_tolerance 进行进一步处理
-    return segment_image_by_edges_and_tolerance(original_img, input_mask, ksize, edge_threshold, gray_tolerance,
-                                                min_area, proximity)
+    plt.savefig(os.path.join('output', '3.1 histogram.png'))
+    """ 
+    block_size = 25
+    c = 2
+    b_channel, g_channel, r_channel = cv2.split(masked_img)
+    # 对每个颜色通道应用自适应阈值
+    adaptive_thresh_b = cv2.adaptiveThreshold(b_channel, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                              cv2.THRESH_BINARY, block_size, c)
+    adaptive_thresh_g = cv2.adaptiveThreshold(g_channel, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                              cv2.THRESH_BINARY, block_size, c)
+    adaptive_thresh_r = cv2.adaptiveThreshold(r_channel, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                              cv2.THRESH_BINARY, block_size, c)
 
-'''    adaptive_thresh = cv2.adaptiveThreshold(masked_img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                            cv2.THRESH_BINARY, 25, 2)
+    # 合并阈值结果
+    adaptive_thresh = cv2.merge([adaptive_thresh_b, adaptive_thresh_g, adaptive_thresh_r])
+    # 确保 input_mask 是单通道
+    if len(input_mask.shape) == 2:
+        input_mask = cv2.cvtColor(input_mask, cv2.COLOR_GRAY2BGR)
+
+    # 对合并结果进行按位操作
     adaptive_thresh = cv2.bitwise_and(adaptive_thresh, input_mask)
     adaptive_thresh = cv2.bitwise_not(adaptive_thresh)
     adaptive_thresh = cv2.bitwise_and(adaptive_thresh, input_mask)
-    adaptive_thresh = filter_small_white_regions(adaptive_thresh, 10)
-    cv2.imwrite(os.path.join('output', '3.2 adaptive_thresh.jpg'), adaptive_thresh)'''
 
-"""    if np.sum(adaptive_thresh) < 0:
+    # 过滤小白色区域
+    adaptive_thresh = filter_small_white_regions(adaptive_thresh, 10)
+    cv2.imwrite(os.path.join('output', '3.2 adaptive_thresh.jpg'), adaptive_thresh)
+    """
+    """if 0:
         print('divide by threshold')
-        return adaptive_thresh
-    else:"""
+        return 1"""
+    """else:"""
+    print('divide by edge')
+    # 否则调用 segment_image_by_edges_and_tolerance 进行进一步处理
+    return segment_image_by_edges_and_tolerance(original_img, input_mask, ksize, edge_threshold, gray_tolerance,
+                                            min_area, proximity)
+
+
 
 
 
@@ -517,20 +552,16 @@ def draw_circle_on_image(img, radius, center, thickness=5, output_dir='output'):
 
     # 中心坐标
     x, y = center
-
+    img_copy = img.copy()
     # 画一个红色的圆
     color = (0, 0, 255)  # 红色 (BGR格式)
-    cv2.circle(img, (x, y), radius, color, thickness)
+    cv2.circle(img_copy, (x, y), radius, color, thickness)
 
     # 创建输出目录（如果不存在）
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+    return img_copy
 
-    # 保存结果图像
-    output_path = os.path.join(output_dir, '3.4_point.jpg')
-    cv2.imwrite(output_path, img)
-
-    print(f"Result image saved to: {output_path}")
 
 
 def fill_large_white_areas(image, area_threshold):
